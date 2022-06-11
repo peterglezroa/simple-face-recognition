@@ -10,7 +10,8 @@ from keras_vggface.vggface import VGGFace
 from mtcnn.mtcnn import MTCNN
 from tensorflow.keras.models import Model
 
-def main():
+# TODO: namespace
+def main(args):
     # Initialize detector
     detector = MTCNN()
 
@@ -22,7 +23,7 @@ def main():
 
     # Modify model to add heatmap
     print(model.summary())
-    conv_output = model.get_layer("fc7").output
+    conv_output = model.get_layer("").output # <- insertar el nombre de convs
     pred_output = model.get_layer("fc8/softmax").output
     model = Model(model.input, output=[conv_output, pred_output])
 
@@ -36,6 +37,8 @@ def main():
         # Detect faces in the frame
         # TODO: Use a thread
         rois = detector.detect_faces(frame)
+        
+        # {"box"}
 
         # Extract one face
         # TODO: Do for every face
@@ -43,6 +46,8 @@ def main():
         roi = image[y:y+h, x:x+h]
         roi = cv2.resize(roi, (224, 224), interpolation = cv2.INTER_AREA)
         roi = np.expand_dims(roi, axis=0).astype(np.float32)
+
+        # -1, 224, 224, 3
 
         # Predict
         conv, pred = model.predict(roi)
@@ -67,3 +72,4 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Script to recognize face detected by camera with cv2"
     )
+    main(parser.parse_args())
