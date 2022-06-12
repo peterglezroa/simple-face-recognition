@@ -12,6 +12,7 @@ import time
 from keras_vggface.vggface import VGGFace
 from matplotlib import cm
 from more_itertools import grouper
+from mtcnn.mtcnn import MTCNN
 from PIL import Image
 from tensorflow.keras.models import Model
 
@@ -34,32 +35,51 @@ def face_recognition(shape:list, frame:mp.Array, nfaces:mp.Value, faces:mp.Array
 
     It modifies heatmaps to concatenate the resulting heatmaps
     """
+    # Initialize detector ----------------------------------------------------
+    detector = MTCNN()
+
     # Initialize recognizer --------------------------------------------------
     model = VGGFace(model=model_n)
     # TODO: Train recognizer with known images
-    # TODO: Freezear todas las capas expecto el softmax
-    # TODO: Entrenar
 
     # Modify model to add heatmap
     conv_output = model.get_layer("conv5_3").output
     pred_output = model.get_layer("fc8/softmax").output
     model = Model(model.input, [conv_output, pred_output])
-    # Preprocess images -------------------------------------------------------
+
+    # Start loop -------------------------------------------------------
     np_faces = []
     n_faces = 0
     while True:
+        # Get frame from shared memory ---------------------------------
+        with frame.get_lock():
+            np_frame = np.array(frame[:], dtype=np.uint8).reshape(shape)
+
+        # Face detection -----------------------------------------------
+        rois = detector.detect_faces(np_frame)
         np_faces.clear()
 
-        # Get numpy array for each face
-        with nfaces.get_lock() and faces.get_lock() and frame.get_lock():
-            n_faces = nfaces.value
-            np_frame = np.array(frame[:], dtype=np.uint8).reshape(shape)
-            for (x, y, w, h) in grouper(4, faces[:nfaces.value*4],
-            incomplete="ignore"):
-                np_faces.append(
-                    cv2.resize(np_frame[y:y+h, x:x+w].copy(), [224,224],
-                        interpolation = cv2.INTER_AREA)
-                )
+        # Update shared memory on face location
+        with nfaces.get_lock() and faces.get_lock():
+            nfaces.value = len(rois[:MAX_FACES])
+            # Insert detected faces
+            faces[:nfaces.value*4] = np.array(
+                [roi["box"] for roi in rois[:MAX_FACES]]).flatten()
+
+#            n_faces = nfaces.value
+#            for (x, y, w, h) in grouper(4, faces[:nfaces.value*4],
+#            incomplete="ignore"):
+#                np_faces.append(
+#                    cv2.resize(np_frame[y:y+h, x:x+w].copy(), [224,224],
+#                        interpolation = cv2.INTER_AREA)
+#                )
+
+        lambs = lambda a, b: a[b[1]:b[1]+b[3], b[0]:b[0]+b[2]]
+        n_faces = len(rois[:MAX_FACES])
+        np_faces = [
+            cv2.resize(lambs(np_frame, roi["box"]), [224,224], interpolation=cv2.INTER_AREA) \
+            for roi in rois
+        ]
 
         if n_faces > 0:
             # Run predictions with gradient tape
@@ -69,42 +89,37 @@ def face_recognition(shape:list, frame:mp.Array, nfaces:mp.Value, faces:mp.Array
                 pred_index = tf.argmax(preds[0])
                 class_channel = preds[:, pred_index]
 
-            # Save permissions to share memory
-            with predictions.get_lock():
-                predictions[0] = pred_index
+                # Save permissions to share memory
+                with predictions.get_lock():
+                    predictions[0] = pred_index
 
-            grads = tape.gradient(class_channel, last_conv)
-            pooled_grads = tf.reduce_mean(grads, axis=(0,1,2))
-            last_conv = last_conv[0]
-            conv_heatmap = last_conv @ pooled_grads[..., tf.newaxis]
-            conv_heatmap = tf.squeeze(conv_heatmap)
-            conv_heatmap = tf.maximum(conv_heatmap, 0)/tf.math.reduce_max(conv_heatmap)
-            conv_heatmap = conv_heatmap.numpy()
+                grads = tape.gradient(class_channel, last_conv)
+                pooled_grads = tf.reduce_mean(grads, axis=(0,1,2))
+                last_conv = last_conv[0]
+                conv_heatmap = last_conv @ pooled_grads[..., tf.newaxis]
+                conv_heatmap = tf.squeeze(conv_heatmap)
+                conv_heatmap = tf.maximum(conv_heatmap, 0)/tf.math.reduce_max(conv_heatmap)
+                conv_heatmap = conv_heatmap.numpy()
 
-            # Rescale heatmap to a range 0-255 and recolor
-            conv_heatmap = np.uint8(255 * conv_heatmap)
-            jet = cm.get_cmap("jet")
-            jet_colors = jet(np.arange(256))[:, :3]
-            jet_heatmap = jet_colors[conv_heatmap]
-            jet_heatmap = tf.keras.preprocessing.image.array_to_img(jet_heatmap)
-            jet_heatmap = jet_heatmap.resize([faces[2], faces[3]])
-            jet_heatmap = tf.keras.preprocessing.image.img_to_array(jet_heatmap)
+                # Rescale heatmap to a range 0-255 and recolor
+                conv_heatmap = np.uint8(255 * conv_heatmap)
+                jet = cm.get_cmap("jet")
+                jet_colors = jet(np.arange(256))[:, :3]
+                jet_heatmap = jet_colors[conv_heatmap]
+                jet_heatmap = tf.keras.preprocessing.image.array_to_img(jet_heatmap)
+                jet_heatmap = jet_heatmap.resize([faces[2], faces[3]])
+                jet_heatmap = tf.keras.preprocessing.image.img_to_array(jet_heatmap)
 
-#            superimposed_img = jet_heatmap * ALPHA + np_frame
-            np_frame[faces[1]:faces[1]+faces[3], faces[0]:faces[0]+faces[2]] += \
-                (jet_heatmap*ALPHA).astype(np.uint8)
-            with heatmap.get_lock():
-                heatmap[:] = np_frame.flatten()
+    #            superimposed_img = jet_heatmap * ALPHA + np_frame
+                np_frame[faces[1]:faces[1]+faces[3], faces[0]:faces[0]+faces[2]] += \
+                    (jet_heatmap*ALPHA).astype(np.uint8)
+                with heatmap.get_lock():
+                    heatmap[:] = np_frame.flatten()
 
         time.sleep(REFRESH_TIME)
 
 # TODO: namespace
 def main(args) -> int:
-    # Model init -------------------------------------------------------------
-    # Initialize cascade
-    face_cascade = cv2.CascadeClassifier(CASCADE_PATH)
-
-
     # Camera -----------------------------------------------------------------
     # Start camera
     video_cap = cv2.VideoCapture(0)
@@ -141,27 +156,10 @@ def main(args) -> int:
         with freezed_frame.get_lock():
             freezed_frame[:] = frame.flatten()
 
-        # Detect faces in the frame
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        d_faces = face_cascade.detectMultiScale(gray, scaleFactor=1.5,
-            minNeighbors=5)
-
-        # Copy frames to global memory
-        with nfaces.get_lock() and faces.get_lock():
-            nfaces.value = len(d_faces)
-            indx = 0
-            for (x, y, w, h) in d_faces:
-                faces[indx] = x
-                faces[indx+1] = y
-                faces[indx+2] = w
-                faces[indx+3] = h
-                indx += 4
-#            faces[indx:MAX_FACES*4] = 0
-
         # Draw rectangle for each face and give current prediction
-        with predictions.get_lock():
+        with nfaces.get_lock() and faces.get_lock() and predictions.get_lock():
             predicted_faces = len(predictions[:])
-            for index, (x, y, w, h) in enumerate(d_faces):
+            for index, (x, y, w, h) in enumerate(grouper(4, faces[:nfaces.value*4])):
                 cv2.rectangle(frame, (x, y), (x+w, y+h), [0,255,0], 2)
                 # TODO: get label for resulting class
                 text = str(predictions[index]) if index < predicted_faces else\
