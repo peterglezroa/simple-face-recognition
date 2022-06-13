@@ -7,17 +7,14 @@ import argparse
 import cv2
 import multiprocessing as mp
 import numpy as np
+import os
 import tensorflow as tf
 import time
-from keras_vggface.vggface import VGGFace
 from matplotlib import cm
 from more_itertools import grouper
 from mtcnn.mtcnn import MTCNN
 from PIL import Image
-from tensorflow.keras.models import Model
-
-# Location of the cascades
-CASCADE_PATH = "/home/peterglezroa/Documents/simple-face-recognition/.venv/lib/python3.8/site-packages/cv2/data/haarcascade_frontalface_alt2.xml"
+from tensorflow.keras.models import Model, load_model
 
 # Time between each call of face recognition
 REFRESH_TIME = 1
@@ -26,8 +23,8 @@ MAX_FACES = 5
 # Alpha to superimpose image with heatmap
 ALPHA=0.4
 
-def face_recognition(shape:list, frame:mp.Array, nfaces:mp.Value, faces:mp.Array,
-    heatmap:mp.Array, predictions:mp.Array, model_n:str="vgg16") -> None:
+def face_recognition(model_n:str, shape:list, frame:mp.Array, nfaces:mp.Value,
+    faces:mp.Array, heatmap:mp.Array, predictions:mp.Array) -> None:
     """
     Function to do face recognition in the detected face frames by the main
     thread.
@@ -39,13 +36,16 @@ def face_recognition(shape:list, frame:mp.Array, nfaces:mp.Value, faces:mp.Array
     detector = MTCNN()
 
     # Initialize recognizer --------------------------------------------------
-    model = VGGFace(model=model_n)
-    # TODO: Train recognizer with known images
+    model = load_model(model_n)
+
+    print(model.summary())
 
     # Modify model to add heatmap
-    conv_output = model.get_layer("conv5_3").output
-    pred_output = model.get_layer("fc8/softmax").output
-    model = Model(model.input, [conv_output, pred_output])
+#    conv_output = model.get_layer("vgg16").get_layer("conv5_3").output
+#    pred_output = model.get_layer("softmax").output
+#    model = Model(inputs=model.get_layer("vgg16").input, outputs=[conv_output, pred_output])
+#
+#    print(model.summary())
 
     # Start loop -------------------------------------------------------
     np_faces = []
@@ -74,7 +74,7 @@ def face_recognition(shape:list, frame:mp.Array, nfaces:mp.Value, faces:mp.Array
 #                        interpolation = cv2.INTER_AREA)
 #                )
 
-        n_faces = len(rois[:MAX_FACES])
+#        n_faces = len(rois[:MAX_FACES])
         lambs = lambda a, b: a[b[1]:b[1]+b[3], b[0]:b[0]+b[2]]
         roib = lambda indx, bindx: rois[indx]["box"][bindx]
         np_faces = [
@@ -82,6 +82,13 @@ def face_recognition(shape:list, frame:mp.Array, nfaces:mp.Value, faces:mp.Array
             for roi in rois
         ]
 
+        if len(rois[:MAX_FACES]) > 0:
+            preds = model.predict(np.array(np_faces))
+            pred_index = tf.argmax(preds[0])
+            with predictions.get_lock():
+                predictions[0] = pred_index
+
+        # TODO: Fix heatmap
         if n_faces > 0:
             # Run predictions with gradient tape
             with tf.GradientTape() as tape:
@@ -119,13 +126,12 @@ def face_recognition(shape:list, frame:mp.Array, nfaces:mp.Value, faces:mp.Array
 
         time.sleep(REFRESH_TIME)
 
-# TODO: namespace
 def main(args) -> int:
-    # Camera -----------------------------------------------------------------
-    # Start camera
-    video_cap = cv2.VideoCapture(0)
+    if os.path.splitext(args.model)[1] != ".h5":
+        raise Exception("This script only accepts .h5 files for models")
 
-    # Get a frame to determine dimensions
+    # Camera -----------------------------------------------------------------
+    video_cap = cv2.VideoCapture(0)
     ret, frame = video_cap.read()
 
     # Multiprocessing --------------------------------------------------------
@@ -140,8 +146,7 @@ def main(args) -> int:
     rec_process = mp.Process (
         name="Face Recognition Thread",
         target = face_recognition,
-        args = [frame.shape, freezed_frame, nfaces, faces, heatmap, predictions,
-            "vgg16"],
+        args = [args.model, frame.shape, freezed_frame, nfaces, faces, heatmap, predictions],
         daemon = True
     )
     rec_process.start()
@@ -159,12 +164,12 @@ def main(args) -> int:
 
         # Draw rectangle for each face and give current prediction
         with nfaces.get_lock() and faces.get_lock() and predictions.get_lock():
-            predicted_faces = len(predictions[:])
             for index, (x, y, w, h) in enumerate(grouper(4, faces[:nfaces.value*4])):
                 cv2.rectangle(frame, (x, y), (x+w, y+h), [0,255,0], 2)
                 # TODO: get label for resulting class
-                text = str(predictions[index]) if index < predicted_faces else\
-                    "loading..."
+                text = args.labels[predictions[index]] \
+                    if args.labels is not None and predictions[index] < len(args.labels) \
+                    else str(predictions[index])
                 ty = (y-10) if y-10 >= 0 else y
                 cv2.putText(frame, text, (x,ty), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
                     [0,255,0], 1, cv2.LINE_AA)
@@ -192,4 +197,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Script to recognize face detected by camera with cv2"
     )
+    parser.add_argument("-m", "--model", type=str, required=True,
+        help="Path to the model to be used. MUST BE TRAINED")
+    parser.add_argument("-l", "--labels", type=str, required=False, nargs="+",
+        help="Labels (must be in order) in string format - model doesnt save them.")
     main(parser.parse_args())

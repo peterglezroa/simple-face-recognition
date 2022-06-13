@@ -130,3 +130,6 @@ dmypy.json
 
 credentials.json
 token.json
+dataset/
+dataset/*
+bin/
