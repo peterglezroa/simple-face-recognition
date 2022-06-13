@@ -74,8 +74,9 @@ def face_recognition(shape:list, frame:mp.Array, nfaces:mp.Value, faces:mp.Array
 #                        interpolation = cv2.INTER_AREA)
 #                )
 
-        lambs = lambda a, b: a[b[1]:b[1]+b[3], b[0]:b[0]+b[2]]
         n_faces = len(rois[:MAX_FACES])
+        lambs = lambda a, b: a[b[1]:b[1]+b[3], b[0]:b[0]+b[2]]
+        roib = lambda indx, bindx: rois[indx]["box"][bindx]
         np_faces = [
             cv2.resize(lambs(np_frame, roi["box"]), [224,224], interpolation=cv2.INTER_AREA) \
             for roi in rois
@@ -107,11 +108,11 @@ def face_recognition(shape:list, frame:mp.Array, nfaces:mp.Value, faces:mp.Array
                 jet_colors = jet(np.arange(256))[:, :3]
                 jet_heatmap = jet_colors[conv_heatmap]
                 jet_heatmap = tf.keras.preprocessing.image.array_to_img(jet_heatmap)
-                jet_heatmap = jet_heatmap.resize([faces[2], faces[3]])
+                jet_heatmap = jet_heatmap.resize([roib(0,2), roib(0,3)])
                 jet_heatmap = tf.keras.preprocessing.image.img_to_array(jet_heatmap)
 
     #            superimposed_img = jet_heatmap * ALPHA + np_frame
-                np_frame[faces[1]:faces[1]+faces[3], faces[0]:faces[0]+faces[2]] += \
+                np_frame[roib(0,1):roib(0,1)+roib(0,3), roib(0,0):roib(0,0)+roib(0,2)] += \
                     (jet_heatmap*ALPHA).astype(np.uint8)
                 with heatmap.get_lock():
                     heatmap[:] = np_frame.flatten()
