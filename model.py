@@ -26,8 +26,10 @@ def create_model(base_model_name:str, num_people:int) -> Model:
 
     # Freeze base model
     model = Sequential(name=f"modified_{base_model_name}")
-#    model.add(InputLayer(input_shape=[224,224,3]))
-    model.add(base_model)
+    model.add(InputLayer(input_shape=[224,224,3]))
+    for layer in base_model.layers:
+        model.add(layer)
+#    model.add(base_model.layers)
     model.add(Dense(num_people, activation="softmax", name="softmax"))
 
     model.compile(optimizer="adam", loss="categorical_crossentropy",

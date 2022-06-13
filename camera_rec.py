@@ -15,13 +15,14 @@ from more_itertools import grouper
 from mtcnn.mtcnn import MTCNN
 from PIL import Image
 from tensorflow.keras.models import Model, load_model
+from tensorflow.keras.layers import InputLayer
 
 # Time between each call of face recognition
 REFRESH_TIME = 1
 # Max number of faces on which to do the process
 MAX_FACES = 5
 # Alpha to superimpose image with heatmap
-ALPHA=0.4
+ALPHA=0.5
 
 def face_recognition(model_n:str, shape:list, frame:mp.Array, nfaces:mp.Value,
     faces:mp.Array, heatmap:mp.Array, predictions:mp.Array) -> None:
@@ -42,10 +43,11 @@ def face_recognition(model_n:str, shape:list, frame:mp.Array, nfaces:mp.Value,
 
     # Modify model to add heatmap
 #    conv_output = model.get_layer("vgg16").get_layer("conv5_3").output
-#    pred_output = model.get_layer("softmax").output
-#    model = Model(inputs=model.get_layer("vgg16").input, outputs=[conv_output, pred_output])
-#
-#    print(model.summary())
+    conv_output = model.get_layer("conv5_3").output
+    pred_output = model.get_layer("softmax").output
+    model = Model(inputs=model.input, outputs=[conv_output, pred_output])
+
+    print(model.summary())
 
     # Start loop -------------------------------------------------------
     np_faces = []
@@ -66,15 +68,7 @@ def face_recognition(model_n:str, shape:list, frame:mp.Array, nfaces:mp.Value,
             faces[:nfaces.value*4] = np.array(
                 [roi["box"] for roi in rois[:MAX_FACES]]).flatten()
 
-#            n_faces = nfaces.value
-#            for (x, y, w, h) in grouper(4, faces[:nfaces.value*4],
-#            incomplete="ignore"):
-#                np_faces.append(
-#                    cv2.resize(np_frame[y:y+h, x:x+w].copy(), [224,224],
-#                        interpolation = cv2.INTER_AREA)
-#                )
-
-#        n_faces = len(rois[:MAX_FACES])
+        n_faces = len(rois[:MAX_FACES])
         lambs = lambda a, b: a[b[1]:b[1]+b[3], b[0]:b[0]+b[2]]
         roib = lambda indx, bindx: rois[indx]["box"][bindx]
         np_faces = [
@@ -82,11 +76,11 @@ def face_recognition(model_n:str, shape:list, frame:mp.Array, nfaces:mp.Value,
             for roi in rois
         ]
 
-        if len(rois[:MAX_FACES]) > 0:
-            preds = model.predict(np.array(np_faces))
-            pred_index = tf.argmax(preds[0])
-            with predictions.get_lock():
-                predictions[0] = pred_index
+#        if len(rois[:MAX_FACES]) > 0:
+#            preds = model.predict(np.array(np_faces))
+#            pred_index = tf.argmax(preds[0])
+#            with predictions.get_lock():
+#                predictions[0] = pred_index
 
         # TODO: Fix heatmap
         if n_faces > 0:
@@ -111,7 +105,7 @@ def face_recognition(model_n:str, shape:list, frame:mp.Array, nfaces:mp.Value,
 
                 # Rescale heatmap to a range 0-255 and recolor
                 conv_heatmap = np.uint8(255 * conv_heatmap)
-                jet = cm.get_cmap("jet")
+                jet = cm.get_cmap("hot")
                 jet_colors = jet(np.arange(256))[:, :3]
                 jet_heatmap = jet_colors[conv_heatmap]
                 jet_heatmap = tf.keras.preprocessing.image.array_to_img(jet_heatmap)
